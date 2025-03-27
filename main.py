@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from bson import ObjectId
 from pydantic import BaseModel
 from typing import Optional
+from pymongo import DESCENDING, ASCENDING
 
 # FastAPI instance
 app = FastAPI()
@@ -105,27 +106,95 @@ async def create_book(book: Book, user: dict = Depends(get_current_user)):
     result = await db.books.insert_one(book.dict())
     return {"message": "Book added successfully", "book_id": str(result.inserted_id)}
 
-# Get All Books
+# Bulk insert
+@app.post("/books/bulkinsert")
+async def bulk_insert(books: list[Book], user: dict = Depends(get_current_user)):
+    documents = [item.dict() for item in books]
+    result  = await db.books.insert_many(documents)
+    return {"message": "Book's added successfully","result": [str(id) for id in result.inserted_ids]}
+        
+
+# get route with soritng and paging options.
 @app.get("/books")
-async def get_books(author: Optional[str]=None,publisher: Optional[str]=None,user: dict = Depends(get_current_user)):
+async def get_books(
+    author: Optional[str] = None,
+    publisher: Optional[str] = None,
+    sort_by: Optional[str] = "title",  # Default sort by title
+    sort_order: Optional[str] = "asc",  # Default to ascending order
+    page: Optional[int] = 1,  # Default to the first page
+    limit: Optional[int] = 10,  # Default to 10 items per page
+    user: dict = Depends(get_current_user)
+):
     query = dict()
-    print(publisher)
+
     if author:
         query["author"] = author
     if publisher:
         query["publisher"] = publisher
-    print("qeury",query)
+
+    # Sorting logic based on query params
+    if sort_order == "desc":
+        sort_order = DESCENDING
+    else:
+        sort_order = ASCENDING
+
+    # Create sort query (default sorting by title)
+    sort_query = [(sort_by, sort_order)]
+
+    # Pagination logic
+    skip = (page - 1) * limit
+
+    total_count = await db.books.count_documents(query)
+    # Fetch books from the database
     books = []
+    print("sort_query",sort_query)
+    async for book in db.books.find(query).skip(skip).limit(limit).sort(sort_query):
+        books.append({**book, "_id": str(book["_id"])})
+
+    return {"rows":books,"count":total_count}
+
+# get route with soritng and paging options.
+@app.get("/books/local/sorting")
+async def get_books(
+    author: Optional[str] = None,
+    publisher: Optional[str] = None,
+    sort_by: Optional[str] = "title",  # Default sort by title
+    sort_order: Optional[str] = "asc",  # Default to ascending order
+    user: dict = Depends(get_current_user)
+):
+    query = dict()
+
+    if author:
+        query["author"] = author
+    if publisher:
+        query["publisher"] = publisher
+
+    # Sorting logic based on query params
+    reverse = False
+    if sort_order == "desc":
+        reverse = True
+
+    # Fetch books from the database
+    books = []
+
     async for book in db.books.find(query):
         books.append({**book, "_id": str(book["_id"])})
-    return books
+    books = sorted(books, key=lambda x: x[sort_by], reverse=reverse)
+    return {"rows":books}
 
 # Get Book by ID
 @app.get("/books/{book_id}")
 async def get_book(book_id: str, user: dict = Depends(get_current_user)):
-    book = await db.books.find_one({"_id": ObjectId(book_id)})
-    if not book:
-        raise HTTPException(status_code=404, detail="Book not found")
+    try:
+        len(book_id)
+        book = await db.books.find_one({"_id": ObjectId(book_id)})
+
+        if not book:
+            raise Exception()
+            # raise HTTPException(status_code=404, detail="Book not found")
+    
+    except Exception:
+        raise HTTPException(status_code=400, detail="Book not found.")
     return {**book, "_id": str(book["_id"])}
 
 # Update Book
